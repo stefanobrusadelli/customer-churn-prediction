@@ -100,7 +100,7 @@ Business Impact Analysis
     src/
     Feature engineering pipeline and utility functions
 
-    reports/
+    reports/figures
     Generated figures and analysis outputs
 
 Notebook descriptions:
@@ -130,16 +130,27 @@ customer behavior over time.
 
 Key feature categories include:
 
-**Engagement Features** - Purchase frequency - Average days between
-purchases - Number of active purchase periods
+### Engagement Features
 
-**Value Features** - Total spend - Average order value - Customer
-lifetime value proxies
+-   Purchase frequency\
+-   Average days between purchases\
+-   Number of active purchase periods
 
-**Lifecycle Features** - Customer tenure - Recency since last purchase
+### Value Features
 
-**Seasonality Features** - Month and quarter indicators - Temporal
-purchase patterns
+-   Total spend\
+-   Average order value\
+-   Customer lifetime value proxies
+
+### Lifecycle Features
+
+-   Customer tenure\
+-   Recency since last purchase
+
+### Seasonality Features
+
+-   Month and quarter indicators\
+-   Temporal purchase patterns
 
 These features capture both **long-term customer behavior and short-term
 activity trends**.
@@ -172,23 +183,38 @@ recall and precision for churn detection.
 
 ------------------------------------------------------------------------
 
-# Model Interpretation
+# Model Insights
 
-To understand the drivers of churn predictions, **SHAP (SHapley Additive
-Explanations)** is used.
+## Feature Importance
 
-This allows us to analyze:
+The following plot shows the global importance of each feature based on
+the **average absolute SHAP value**.
 
--   Global feature importance
--   Individual prediction explanations
--   Behavioral signals associated with churn risk
+![Feature Importance](reports/figures/shap_feature_importance.png)
 
-Common predictors include:
+Key drivers of churn prediction include:
 
--   Customer recency
 -   Purchase frequency
--   Customer tenure
--   Average order value
+-   Seasonal purchase patterns (Q4 ratio)
+-   Customer spending behavior
+-   Early engagement signals
+-   Purchase interval variability
+
+------------------------------------------------------------------------
+
+## Feature Effects on Churn
+
+The SHAP beeswarm plot shows how different feature values influence the
+churn prediction.
+
+Each dot represents a customer observation.\
+The horizontal position indicates the impact on the prediction, while
+the color indicates the feature value.
+
+![SHAP Effects](reports/figures/shap_beeswarm.png)
+
+This visualization highlights how customer behavioral patterns influence
+the model's predictions.
 
 ------------------------------------------------------------------------
 
@@ -197,12 +223,24 @@ Common predictors include:
 Predicting churn allows businesses to implement **targeted retention
 strategies**, such as:
 
--   Personalized promotions
--   Customer engagement campaigns
+-   Personalized promotions\
+-   Customer engagement campaigns\
 -   Loyalty incentives
 
 By identifying high-risk customers early, companies can reduce revenue
 loss and improve long-term customer value.
+
+------------------------------------------------------------------------
+
+## Churn Risk Segmentation
+
+Customers can be segmented into risk groups based on predicted churn
+probability.
+
+![Churn Risk](reports/figures/churn_by_risk_segment.png)
+
+This segmentation enables companies to prioritize retention efforts
+toward customers with the highest churn risk.
 
 ------------------------------------------------------------------------
 
