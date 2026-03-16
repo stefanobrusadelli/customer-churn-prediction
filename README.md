@@ -125,35 +125,25 @@ interpretation - Business impact analysis
 
 # Feature Engineering
 
-Features are generated using **sliding observation windows** to capture
-customer behavior over time.
+Customer-level features are generated using **sliding observation windows** to capture purchasing behavior over time.
 
-Key feature categories include:
+The feature set focuses on describing customer engagement, spending patterns, purchase regularity, lifecycle dynamics, and seasonal purchasing behavior.
 
-### Engagement Features
+### Key Features
 
--   Purchase frequency\
--   Average days between purchases\
--   Number of active purchase periods
+| Feature | Description |
+|--------|-------------|
+| Frequency | Number of purchases during the observation window |
+| Monetary | Total spending during the observation window |
+| Recency | Days since the customer's last purchase |
+| Q4Ratio | Proportion of purchases occurring in Q4 (captures seasonal buying behavior) |
+| PurchaseIntervalCV | Variability in time between purchases |
+| SpendCV | Variability in order value |
+| CustomerLifetime | Time since the customer's first purchase |
 
-### Value Features
+A **complete feature definition table** is available in the Feature Engineering notebook:
 
--   Total spend\
--   Average order value\
--   Customer lifetime value proxies
-
-### Lifecycle Features
-
--   Customer tenure\
--   Recency since last purchase
-
-### Seasonality Features
-
--   Month and quarter indicators\
--   Temporal purchase patterns
-
-These features capture both **long-term customer behavior and short-term
-activity trends**.
+`notebooks/03_feature_engineering.ipynb`
 
 ------------------------------------------------------------------------
 
@@ -223,8 +213,8 @@ the model's predictions.
 Predicting churn allows businesses to implement **targeted retention
 strategies**, such as:
 
--   Personalized promotions\
--   Customer engagement campaigns\
+-   Personalized promotions
+-   Customer engagement campaigns
 -   Loyalty incentives
 
 By identifying high-risk customers early, companies can reduce revenue
