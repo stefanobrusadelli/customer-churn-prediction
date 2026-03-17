@@ -1,13 +1,17 @@
 # Customer Churn Prediction
 
-An end-to-end machine learning project that predicts customer churn
-using transactional retail data. The project demonstrates a complete
-data science workflow including **data cleaning, exploratory data
-analysis, feature engineering with sliding time windows, walk-forward
-validation, and interpretable machine learning models**.
+An end-to-end machine learning project that predicts customer churn using transactional retail data.
 
-The objective is to identify customers likely to stop purchasing so that
-businesses can take **proactive retention actions**.
+The model identifies high-risk customers and shows that **the top 30% highest-risk segment captures over 50% of all churners**, enabling highly targeted and cost-effective retention strategies.
+
+The project demonstrates a complete data science workflow, including data cleaning, time-aware feature engineering, walk-forward validation, and interpretable machine learning models.
+
+------------------------------------------------------------------------
+
+## Key Results
+- Top 10% highest-risk customers show ~56% churn rate vs ~1.6% in lowest-risk segment  
+- Top 20% highest-risk customers capture **39.3% of all churners**  
+- Top 30% highest-risk customers capture **53.9% of all churners**  
 
 ------------------------------------------------------------------------
 
@@ -210,16 +214,24 @@ the model's predictions.
 
 # Business Impact
 
-Predicting churn allows businesses to implement **targeted retention
-strategies**, such as:
+The model enables **targeted and cost-effective retention strategies** by ranking customers based on churn risk.
 
--   Personalized promotions
--   Customer engagement campaigns
--   Loyalty incentives
+Key insights:
 
-By identifying high-risk customers early, companies can reduce revenue
-loss and improve long-term customer value.
+- The highest-risk segment shows a churn rate of ~56%, compared to ~1.6% in the lowest-risk group  
+- The top 20% highest-risk customers capture **39.3% of all churners**  
+- The top 30% highest-risk customers capture **53.9% of all churners**  
 
+This demonstrates that churn risk is **highly concentrated in a relatively small portion of customers**.
+
+This allows companies to:
+
+- Focus retention efforts on a high-impact subset of customers  
+- Reduce wasted marketing spend on low-risk users  
+- Prioritize interventions where they are most likely to have an effect  
+
+Example:
+By targeting only the top 20–30% highest-risk customers, a company can capture a large share of future churners, making retention campaigns significantly more efficient and cost-effective.
 ------------------------------------------------------------------------
 
 ## Churn Risk Segmentation
@@ -231,6 +243,15 @@ probability.
 
 This segmentation enables companies to prioritize retention efforts
 toward customers with the highest churn risk.
+
+------------------------------------------------------------------------
+## How This Would Be Used in Practice
+
+1. Run the model periodically on active customers  
+2. Rank customers by predicted churn probability  
+3. Segment customers into risk deciles  
+4. Target high-risk segments with retention campaigns  
+   (e.g., discounts, re-engagement emails, loyalty incentives)  
 
 ------------------------------------------------------------------------
 
