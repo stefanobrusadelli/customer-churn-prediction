@@ -228,10 +228,10 @@ This allows companies to:
 
 - Focus retention efforts on a high-impact subset of customers  
 - Reduce wasted marketing spend on low-risk users  
-- Prioritize interventions where they are most likely to have an effect  
+- Prioritize interventions where they are most likely to have an effect 
 
-Example:
-By targeting only the top 20–30% highest-risk customers, a company can capture a large share of future churners, making retention campaigns significantly more efficient and cost-effective.
+Example: By targeting only the top 20-30% highest-risk customers, a company can capture a large share of future churners, making retention campaigns significantly more efficient and cost-effective.
+
 ------------------------------------------------------------------------
 
 ## Churn Risk Segmentation
