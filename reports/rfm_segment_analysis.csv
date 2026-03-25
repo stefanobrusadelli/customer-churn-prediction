@@ -1,0 +1,8 @@
+Segment,Count,Churn_Rate,R_Score,F_Score,M_Score
+At Risk,364,1.0,1.65,3.25,3.3
+Champions,1170,0.0,4.59,4.69,4.66
+Hibernating,1171,1.0,1.4,1.41,1.4
+Loyal,586,0.68,2.55,4.4,4.43
+Need Attention,972,0.23,3.76,1.94,1.91
+Other,631,0.84,2.12,2.78,2.86
+Potential Loyalists,424,0.0,4.44,3.34,3.3
