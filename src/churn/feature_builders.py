@@ -1,15 +1,27 @@
+"""
+Feature Builders Module
+
+Feature groups:
+- RFM features → customer value & recency
+- Engagement intensity → activity density over time
+- Trend features → behavioral change over time
+- Early lifecycle → first purchase behavior
+- Seasonality → temporal purchasing patterns
+- Timing → purchase regularity & delay
+- Product behavior → diversity & returns
+"""
 import pandas as pd
 import numpy as np
 from datetime import timedelta
 
-def build_rfm(feature_df, feature_end):
+def build_rfm(feature_df, feature_end, window_size_days):
     """
     Calculate Recency, Frequency, and Monetary features for each customer.
     
     Features:
     - Recency: Days since customer's last purchase (as of feature_end)
     - Frequency: Number of unique invoices/purchases made
-    - Monetary: Total sum spent across all transactions
+    - Monetary: Total spend across all transactions (observation window)
     - LogMonetary: Natural log of (Monetary + 1) to handle skewness
     - LogFrequency: Natural log of (Frequency + 1) to handle skewness
     
@@ -36,15 +48,33 @@ def build_rfm(feature_df, feature_end):
         - LogFrequency: Log-transformed frequency
     """
     if len(feature_df) == 0:
-        return pd.DataFrame(columns=['CustomerID', 'Recency', 'Frequency', 'Monetary', 'LogMonetary', 'LogFrequency'])
-    
-    rfm = feature_df.groupby('CustomerID').agg({
+        return pd.DataFrame(columns=[
+            'CustomerID', 'Recency', 'Frequency', 'Monetary',
+            'LogFrequency', 'LogMonetary'
+        ])
+
+    # Frequency & Recency (purchase only)
+    purchase_df = feature_df[
+        feature_df['TransactionType'] == 'Standard_Purchase'
+    ].copy()
+
+    freq_rec = purchase_df.groupby('CustomerID').agg({
         'InvoiceDate': lambda x: (feature_end - x.max()).days,
-        'Invoice': 'nunique',
-        'TotalSum': 'sum'
-    }).reset_index()
-    
-    rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
+        'Invoice': 'nunique'
+    }).rename(columns={
+        'InvoiceDate': 'Recency',
+        'Invoice': 'Frequency'
+    })
+
+    # Monetary (all transactions)
+    monetary = feature_df.groupby('CustomerID')['TotalSum'].sum().rename('Monetary')
+
+    # Merge
+    rfm = freq_rec.join(monetary, how='outer').reset_index()
+
+    rfm['Frequency'] = rfm['Frequency'].fillna(0)
+    rfm['Recency'] = rfm['Recency'].fillna(window_size_days)
+    rfm['Monetary'] = rfm['Monetary'].fillna(0)
 
     # Log transforms help reduce skewness in transactional variables
     rfm['LogMonetary'] = np.log1p(np.maximum(0, rfm['Monetary']))
@@ -54,32 +84,64 @@ def build_rfm(feature_df, feature_end):
 
 def build_aov(feature_df):
     """
-    Calculate average order value per customer.
-    
+    Calculate average order value and variability of transaction values.
+
     Features:
-    - AvgOrderValue: Mean transaction amount across all purchases
-    
+    - AvgOrderValue: Average transaction amount
+    - OrderValueCV: Coefficient of variation (std/mean) of transaction amounts
+        - Measures spending consistency/volatility
+        - Higher values indicate more variable spending patterns
+    - IsOrderValueCVDefined: Indicator whether CV is well-defined (mean > 0 and std available)
+
     Parameters:
     -----------
     feature_df : DataFrame
         Transaction data from observation window containing at minimum:
         - CustomerID: Customer identifier
         - TotalSum: Transaction amount
-    
+
     Returns:
     --------
     aov : DataFrame
-        Average order value features with columns:
+        Order value features with columns:
         - CustomerID: Unique customer identifier
-        - AvgOrderValue: Mean spend per transaction
+        - AvgOrderValue: Average transaction value
+        - OrderValueCV: Coefficient of variation of order value
+        - IsOrderValueCVDefined: Indicator for valid CV computation
     """
+
     if len(feature_df) == 0:
-        return pd.DataFrame(columns=['CustomerID', 'AvgOrderValue'])
-    
-    aov = feature_df.groupby('CustomerID')['TotalSum'].mean().reset_index()
-    aov.columns = ['CustomerID', 'AvgOrderValue']
-    
-    return aov
+        return pd.DataFrame(columns=[
+            'CustomerID', 'AvgOrderValue','OrderValueCV',
+            'IsOrderValueCVDefined'
+        ])
+
+    agg = (
+        feature_df
+        .groupby('CustomerID')['TotalSum']
+        .agg(['mean', 'std'])
+        .reset_index()
+    )
+
+    agg.columns = ['CustomerID', 'AvgOrderValue', 'OrderValueStd']
+
+    valid = (agg['AvgOrderValue'] > 0) & (agg['OrderValueStd'].notna())
+
+    agg['OrderValueCV'] = np.where(
+        valid,
+        agg['OrderValueStd'] / agg['AvgOrderValue'],
+        0
+    )
+    agg['IsOrderValueCVDefined'] = valid.astype(int)
+
+    agg = agg.fillna(0)
+
+    return agg[[
+        'CustomerID',
+        'AvgOrderValue',
+        'OrderValueCV',
+        'IsOrderValueCVDefined'
+    ]]
 
 def build_return_rate(feature_df):
     """
@@ -124,8 +186,11 @@ def build_return_rate(feature_df):
     
     rr = pd.concat([return_counts, purchases], axis=1).fillna(0)
     
-    # Cap at 1.0 (100%) to avoid outliers
-    rr['ReturnRate'] = (rr['NumReturns'] / rr['TotalPurchases']).fillna(0).clip(upper=1.0)
+    rr['ReturnRate'] = np.where(
+        rr['TotalPurchases'] > 0,
+        rr['NumReturns'] / rr['TotalPurchases'],
+        0
+    )
     
     return rr[['ReturnRate']].reset_index()
 
@@ -160,6 +225,7 @@ def build_seasonality(feature_df):
     df['Month'] = df['InvoiceDate'].dt.month
     df['IsQ4'] = df['Month'].isin([10, 11, 12])
 
+    # Q4Ratio & FavoriteMonth 
     season = df.groupby('CustomerID').agg({
         'IsQ4': 'mean',
         'Month': lambda x: x.mode()[0] if len(x.mode()) > 0 else 6
@@ -175,7 +241,10 @@ def build_early_engagement(feature_df, early_period_days=30):
     
     Features:
     - FirstMonthPurchases: Number of purchases in first N days
-    - FirstMonthSpend: Total spend in first N days
+    - MonetaryFirstMonth: Total spend in first N days
+    - AvgOrderValueFirstMonth: Average order value in first N days
+        - Captures quality of early engagement
+        - Higher values indicate higher-value initial purchases
     
     Parameters:
     -----------
@@ -185,46 +254,49 @@ def build_early_engagement(feature_df, early_period_days=30):
         - InvoiceDate: Date of transaction
         - Invoice: Invoice identifier
         - TotalSum: Transaction amount
-    early_period_days : int, default=30
-        Number of days to consider as the "early engagement" period
-        (measured from first purchase date)
     
     Returns:
     --------
-    early_features : DataFrame
+    early : DataFrame
         Early engagement metrics with columns:
         - CustomerID: Unique customer identifier
         - FirstMonthPurchases: Number of purchases in first N days
-        - FirstMonthSpend: Total spend in first N days
-    first_purchase : DataFrame
-        First purchase dates with columns:
-        - CustomerID: Unique customer identifier
-        - FirstPurchaseDate: Date of customer's first transaction
+        - MonetaryFirstMonth: Total spend in first N days
+        - AvgOrderValueFirstMonth: Average order value in first N days
     """
 
     if len(feature_df) == 0:
-        return pd.DataFrame(columns=['CustomerID', 'FirstMonthPurchases', 'FirstMonthSpend'])
+        return pd.DataFrame(columns=[
+            'CustomerID',
+            'FirstMonthPurchases',
+            'FirstMonthSpend',
+            'FirstMonthAvgOrderValue'
+        ])
     
-    first_purchase = get_first_purchase_dates(feature_df)
+    first_purchase = get_first_purchase_dates(feature_df).copy()
     
     df = feature_df.merge(first_purchase, on='CustomerID')
     df['DaysSinceFirst'] = (df['InvoiceDate'] - df['FirstPurchaseDate']).dt.days
 
     # Calculate early engagement metrics
-    early = (
-        df[df['DaysSinceFirst'] <= early_period_days]
-        .groupby('CustomerID')
+    early = df[df['DaysSinceFirst'] <= early_period_days] \
+        .groupby('CustomerID') \
         .agg(
             FirstMonthPurchases=('Invoice', 'nunique'),
-            FirstMonthSpend=('TotalSum', 'sum')
-        )
+            MonetaryFirstMonth=('TotalSum', 'sum')
+        ) \
         .reset_index()
-    )
 
-    # Ensure all customers are represented (even those with no early activity)
+    # Ensure all customers are represented
     early = first_purchase[['CustomerID']].merge(
         early, on='CustomerID', how='left'
     ).fillna(0)
+
+    early['AvgOrderValueFirstMonth'] = np.where(
+        early['FirstMonthPurchases'] > 0,
+        early['MonetaryFirstMonth'] / early['FirstMonthPurchases'],
+        0
+    )
 
     return early
 
@@ -251,7 +323,7 @@ def get_first_purchase_dates(feature_df):
     """
     if len(feature_df) == 0:
         return pd.DataFrame(columns=['CustomerID', 'FirstPurchaseDate'])
-    
+
     first_purchase = (feature_df
         .groupby('CustomerID')['InvoiceDate']
         .min()
@@ -261,60 +333,13 @@ def get_first_purchase_dates(feature_df):
     
     return first_purchase
 
-def build_purchase_velocity(feature_df):
-    """
-    Calculate purchase timing patterns and regularity.
-    
-    Features:
-    - AvgDaysBetweenPurchases: Average gap between purchases
-    - PurchaseRegularity: Coefficient of variation (std/mean) of purchase gaps
-        - Lower values indicate more regular purchasing patterns
-        - Higher values indicate irregular or sporadic purchasing
-    
-    Notes:
-    - PurchaseRegularity = 0 for customers with only one purchase
-    - PurchaseRegularity is set to 0 when AvgDaysBetweenPurchases = 0
-    
-    Parameters:
-    -----------
-    feature_df : DataFrame
-        Transaction data from observation window containing at minimum:
-        - CustomerID: Customer identifier
-        - InvoiceDate: Date of transaction (for calculating gaps)
-    
-    Returns:
-    --------
-    velocity : DataFrame
-        Purchase velocity features with columns:
-        - CustomerID: Unique customer identifier
-        - AvgDaysBetweenPurchases: Mean number of days between purchases
-        - PurchaseRegularity: Coefficient of variation of purchase gaps
-    """
-    if len(feature_df) == 0:
-        return pd.DataFrame(columns=['CustomerID', 'AvgDaysBetweenPurchases', 'PurchaseRegularity'])
-    
-    df = feature_df.sort_values(['CustomerID', 'InvoiceDate']).copy()
-
-    df['date_diff'] = df.groupby('CustomerID')['InvoiceDate'] \
-        .diff() \
-        .dt.days
-
-    velocity = df.groupby('CustomerID')['date_diff'].agg(
-        AvgDaysBetweenPurchases='mean',
-        StdDaysBetweenPurchases='std'
-    ).reset_index()
-
-    velocity['PurchaseRegularity'] = np.where(
-        (velocity['AvgDaysBetweenPurchases'] > 0) & (velocity['StdDaysBetweenPurchases'].notna()),
-        velocity['StdDaysBetweenPurchases'] / velocity['AvgDaysBetweenPurchases'],
-        0
-    )
-
-    velocity = velocity.drop(columns=['StdDaysBetweenPurchases'])
-
-    return velocity
-
-def build_trend_features(feature_df, feature_end, window_size_days, recent_days=30):
+def build_trend_features(
+    feature_df,
+    feature_end,
+    window_size_days,
+    recent_days=30,
+    epsilon=1e-6
+):
     """
     Compare recent behavior vs historical behavior to identify trends.
     
@@ -322,15 +347,20 @@ def build_trend_features(feature_df, feature_end, window_size_days, recent_days=
     - RevenueTrend: Recent revenue rate / historical revenue rate
         - >1 indicates increasing revenue velocity
         - <1 indicates decreasing revenue velocity
-        - Special values: 2 for new customers with only recent activity, 1 for no activity
     - FrequencyTrend: Recent frequency rate / historical frequency rate
         - >1 indicates increasing purchase frequency
         - <1 indicates decreasing purchase frequency
-        - Special values: 2 for new customers with only recent activity, 1 for no activity
+    - MonetaryRecent: Total spend in the recent period
+        - Captures absolute recent spending level
+    - FreqRecent: Number of purchases in the recent period
+        - Captures absolute recent engagement level
+    - IsNewCustomerTrend: Indicator for customers with no historical activity but recent activity
+    - NoHistoricalActivity: Indicator for customers with no activity in the historical period
     
     Notes:
     - Recent period is defined as the last `recent_days` of the observation window
-    - Rates are calculated per day to account for different time periods
+    - Historical period is the remaining portion of the observation window
+    - Smooth ratios are used (with epsilon) to avoid division by zero
     - Extreme ratios are capped at 10 to prevent outliers from dominating
     
     Parameters:
@@ -348,6 +378,8 @@ def build_trend_features(feature_df, feature_end, window_size_days, recent_days=
         Total observation window length in days
     recent_days : int, default=30
         Number of days to consider as "recent" period
+    epsilon : float, default=1e-6
+        Small constant to avoid division by zero
     
     Returns:
     --------
@@ -356,65 +388,80 @@ def build_trend_features(feature_df, feature_end, window_size_days, recent_days=
         - CustomerID: Unique customer identifier
         - RevenueTrend: Ratio of recent to historical revenue rate (capped at 10)
         - FrequencyTrend: Ratio of recent to historical frequency rate (capped at 10)
+        - MonetaryRecent: Total revenue in recent period
+        - FreqRecent: Number of purchases in recent period
+        - IsNewCustomerTrend: Binary flag for new/emerging activity
+        - NoHistoricalActivity: Binary flag for no past activity
     """
-    if len(feature_df) == 0:
-        return pd.DataFrame(columns=['CustomerID', 'RevenueTrend', 'FrequencyTrend'])
 
+    if len(feature_df) == 0:
+        return pd.DataFrame(columns=[
+            'CustomerID',
+            'RevenueTrend', 'FrequencyTrend',
+            'MonetaryRecent', 'FreqRecent',
+            'IsNewCustomerTrend', 'NoHistoricalActivity'
+        ])
+
+    # Define time windows
     recent_start = feature_end - timedelta(days=recent_days)
 
+    # Frequency (purchase only) 
     purchase_df = feature_df[
         feature_df['TransactionType'] == 'Standard_Purchase'
     ].copy()
     
     purchase_df['is_recent'] = purchase_df['InvoiceDate'] >= recent_start
-
-    # Revenue masked columns
-    purchase_df['recent_revenue'] = purchase_df['TotalSum'].where(purchase_df['is_recent'], 0)
-    purchase_df['hist_revenue'] = purchase_df['TotalSum'].where(~purchase_df['is_recent'], 0)
-
-    grouped = purchase_df.groupby('CustomerID')
-
-    revenue = grouped[['recent_revenue', 'hist_revenue']].sum()
-
-    freq = grouped.agg(
-        RecentFreq=('Invoice', lambda invoice: invoice[purchase_df.loc[invoice.index, 'is_recent']].nunique()),
-        HistoricalFreq=('Invoice', lambda invoice: invoice[~purchase_df.loc[invoice.index, 'is_recent']].nunique())
-    )
-
-    trend_df = revenue.join(freq)
-
-    historical_period_days = max(window_size_days - recent_days, 1)
-    recent_period_days = max(recent_days, 1)
     
+    freq = purchase_df.groupby('CustomerID').agg(
+        FreqRecent=('Invoice', lambda x: x[purchase_df.loc[x.index, 'is_recent']].nunique()),
+        FreqHistorical=('Invoice', lambda x: x[~purchase_df.loc[x.index, 'is_recent']].nunique())
+    )
+    
+    # Revenue (all transactions)
+    feature_df['is_recent'] = feature_df['InvoiceDate'] >= recent_start
+    
+    revenue = feature_df.groupby('CustomerID').agg(
+        recent_revenue=('TotalSum', lambda x: x[feature_df.loc[x.index, 'is_recent']].sum()),
+        hist_revenue=('TotalSum', lambda x: x[~feature_df.loc[x.index, 'is_recent']].sum())
+    )
+    
+    # Merge
+    trend_df = revenue.join(freq, how='outer')
+    trend_df = trend_df.fillna(0)
+
+    # Time normalization
+    recent_period_days = max(recent_days, 1)
+    historical_period_days = max(window_size_days - recent_days, 1)
+
+    # Rates
     trend_df['RecentRevenueRate'] = trend_df['recent_revenue'] / recent_period_days
     trend_df['HistoricalRevenueRate'] = trend_df['hist_revenue'] / historical_period_days
 
-    trend_df['RecentFreqRate'] = trend_df['RecentFreq'] / recent_period_days
-    trend_df['HistoricalFreqRate'] = trend_df['HistoricalFreq'] / historical_period_days
+    trend_df['RecentFreqRate'] = trend_df['FreqRecent'] / recent_period_days
+    trend_df['HistoricalFreqRate'] = trend_df['FreqHistorical'] / historical_period_days
 
-    trend_df['RevenueTrend'] = np.where(
-        trend_df['HistoricalRevenueRate'] > 0,
-        trend_df['RecentRevenueRate'] / trend_df['HistoricalRevenueRate'],
-         # Customer had no historical revenue but has recent revenue, so indicate new or emerging activity (2)
-         # No revenue both historically and recently, treat as neutral (1)
-        np.where(trend_df['RecentRevenueRate'] > 0, 2, 1) 
-    )
-    
-    trend_df['FrequencyTrend'] = np.where(
-        trend_df['HistoricalFreqRate'] > 0,
-        trend_df['RecentFreqRate'] / trend_df['HistoricalFreqRate'],
-         # Customer had no historical revenue but has recent revenue, so indicate new or emerging activity (2)
-         # No revenue both historically and recently, treat as neutral (1)
-        np.where(trend_df['RecentFreqRate'] > 0, 2, 1)
+    # Activity momentum (recent vs overall baseline rate)
+    overall_freq_rate = (
+        (trend_df['FreqRecent'] + trend_df['FreqHistorical']) /
+        max(window_size_days, 1)
     )
 
-    # Limit extreme frequency ratios caused by very small historical values
-    trend_df['RevenueTrend'] = trend_df['RevenueTrend'].clip(upper=10)
-    trend_df['FrequencyTrend'] = trend_df['FrequencyTrend'].clip(upper=10)
+    # Flags
+    trend_df['IsNewCustomerTrend'] = (
+        (trend_df['HistoricalRevenueRate'] < epsilon) &
+        (trend_df['RecentRevenueRate'] > 0)
+    ).astype(int)
 
-    return trend_df[['RevenueTrend', 'FrequencyTrend']].reset_index()
+    trend_df['NoHistoricalActivity'] = (
+        trend_df['HistoricalRevenueRate'] < epsilon
+    ).astype(int)
 
-def build_customer_lifetime(first_purchase_df, feature_end):
+    # Final output
+    trend_df = trend_df.reset_index()
+
+    return trend_df[['CustomerID', 'IsNewCustomerTrend', 'NoHistoricalActivity']]
+
+def build_customer_lifetime(feature_df, feature_end):
     """
     Calculate customer tenure.
     
@@ -437,168 +484,18 @@ def build_customer_lifetime(first_purchase_df, feature_end):
         - CustomerID: Unique customer identifier
         - CustomerLifetime: Days since first purchase
     """
-    if len(first_purchase_df) == 0:
+    if len(feature_df) == 0:
         return pd.DataFrame(columns=['CustomerID', 'CustomerLifetime'])
-    
-    lifetime = first_purchase_df.copy()
 
-    lifetime['CustomerLifetime'] = (
-        feature_end - lifetime['FirstPurchaseDate']
+    df = get_first_purchase_dates(feature_df).copy()
+    
+    df['CustomerLifetime'] = (
+        feature_end - df['FirstPurchaseDate']
     ).dt.days
 
-    lifetime = lifetime[['CustomerID', 'CustomerLifetime']]
+    df = df[['CustomerID', 'CustomerLifetime']]
 
-    return lifetime
-
-def add_inactivity_ratio(features):
-    """
-    Calculate ratio of current inactivity to typical purchase gap.
-    
-    Features:
-    - InactivityRatio: Recency / AvgDaysBetweenPurchases
-        - Values >1 indicate customer is inactive beyond their typical pattern
-        - Values <1 indicate customer is active within their typical pattern
-        - Set to 0 when AvgDaysBetweenPurchases is 0 (single-purchase customers)
-    
-    Notes:
-    - This feature helps identify customers who may be at risk of churning
-    - Higher ratios suggest increasing inactivity relative to historical patterns
-    
-    Parameters:
-    -----------
-    features : DataFrame
-        Customer features containing at minimum:
-        - Recency: Days since last purchase
-        - AvgDaysBetweenPurchases: Average gap between purchases
-    
-    Returns:
-    --------
-    features : DataFrame
-        Original DataFrame with additional InactivityRatio column
-    """
-    features['InactivityRatio'] = np.where(
-        features['AvgDaysBetweenPurchases'] > 0,
-        features['Recency'] / features['AvgDaysBetweenPurchases'],
-        0
-    )
-
-    return features
-
-
-def build_frequency_trend(feature_df, feature_end, recent_days=30):
-    """
-    Calculate purchase frequency trend comparing recent vs previous period.
-
-    Features:
-    - FreqRecent: Number of purchases in the recent period
-    - FreqPrev: Number of purchases in the previous period
-    - FreqChange: Difference between recent and previous frequency
-    - FreqRatio: Ratio between recent and previous frequency
-
-    Parameters
-    ----------
-    feature_df : DataFrame
-        Transaction data containing:
-        - CustomerID
-        - InvoiceDate
-        - Invoice
-    feature_end : datetime
-        End of observation window
-    recent_days : int
-        Length of recent window in days
-
-    Returns
-    -------
-    DataFrame
-    """
-
-    if len(feature_df) == 0:
-        return pd.DataFrame(columns=[
-            'CustomerID', 'FreqRecent', 'FreqPrev', 'FreqChange', 'FreqRatio'
-        ])
-
-    recent_start = feature_end - timedelta(days=recent_days)
-    prev_start = feature_end - timedelta(days=2 * recent_days)
-
-    recent = feature_df[feature_df['InvoiceDate'] >= recent_start]
-    prev = feature_df[(feature_df['InvoiceDate'] >= prev_start) &
-                      (feature_df['InvoiceDate'] < recent_start)]
-
-    freq_recent = recent.groupby('CustomerID')['Invoice'].nunique()
-    freq_prev = prev.groupby('CustomerID')['Invoice'].nunique()
-
-    freq = pd.DataFrame({
-        'FreqRecent': freq_recent,
-        'FreqPrev': freq_prev
-    }).fillna(0)
-
-    freq['FreqChange'] = freq['FreqRecent'] - freq['FreqPrev']
-    freq['FreqRatio'] = freq['FreqRecent'] / (freq['FreqPrev'] + 1)
-
-    freq = freq.reset_index()
-
-    return freq
-
-
-def build_revenue_trend(feature_df, feature_end, recent_days=30):
-    """
-    Calculate revenue trend comparing recent vs previous period.
-    
-    Features:
-    - RevRecent: Total revenue in the recent period
-    - RevPrev: Total revenue in the previous period
-    - RevChange: Absolute change in revenue (RevRecent - RevPrev)
-    - RevRatio: Ratio of recent to previous revenue (capped by adding 1 to denominator)
-    
-    Parameters:
-    -----------
-    feature_df : DataFrame
-        Transaction data from observation window containing at minimum:
-        - CustomerID: Customer identifier
-        - InvoiceDate: Date of transaction
-        - TotalSum: Transaction amount
-    feature_end : datetime
-        End of observation window
-    recent_days : int, default=30
-        Number of days to consider as "recent" period
-    
-    Returns:
-    --------
-    trend : DataFrame
-        Revenue trend features with columns:
-        - CustomerID: Unique customer identifier
-        - RevRecent: Total spend in recent period
-        - RevPrev: Total spend in previous period
-        - RevChange: Change in spend between periods
-        - RevRatio: Ratio of recent to previous spend
-    """
-
-    if len(feature_df) == 0:
-        return pd.DataFrame(columns=[
-            'CustomerID', 'RevRecent', 'RevPrev', 'RevChange', 'RevRatio'
-        ])
-
-    recent_start = feature_end - timedelta(days=recent_days)
-    prev_start = feature_end - timedelta(days=2 * recent_days)
-
-    recent = feature_df[feature_df['InvoiceDate'] >= recent_start]
-    prev = feature_df[(feature_df['InvoiceDate'] >= prev_start) &
-                      (feature_df['InvoiceDate'] < recent_start)]
-
-    rev_recent = recent.groupby('CustomerID')['TotalSum'].sum()
-    rev_prev = prev.groupby('CustomerID')['TotalSum'].sum()
-
-    rev = pd.DataFrame({
-        'RevRecent': rev_recent,
-        'RevPrev': rev_prev
-    }).fillna(0)
-
-    rev['RevChange'] = rev['RevRecent'] - rev['RevPrev']
-    rev['RevRatio'] = rev['RevRecent'] / (rev['RevPrev'] + 1)
-
-    rev = rev.reset_index()
-
-    return rev
+    return df
 
 def build_purchase_intervals(feature_df):
     """
@@ -606,10 +503,14 @@ def build_purchase_intervals(feature_df):
     
     Features:
     - AvgPurchaseInterval: Mean number of days between consecutive purchases
-    - StdPurchaseInterval: Standard deviation of purchase intervals
     - PurchaseIntervalCV: Coefficient of variation (std/mean) of purchase intervals
         - Measures regularity of purchase timing
         - Lower values indicate more consistent purchasing patterns
+        - Set to 0 when undefined (e.g., insufficient data or zero mean)
+    - IsPurchaseIntervalCVDefined: Indicator whether CV is statistically defined
+        - 1 if AvgPurchaseInterval > 0 and StdPurchaseInterval is available
+        - 0 otherwise (e.g., single purchase or insufficient data)
+        - Helps distinguish true regularity (CV = 0) from missing/undefined cases
     
     Parameters:
     -----------
@@ -625,18 +526,19 @@ def build_purchase_intervals(feature_df):
         - CustomerID: Unique customer identifier
         - AvgPurchaseInterval: Mean days between purchases
         - StdPurchaseInterval: Standard deviation of purchase intervals
-        - PurchaseIntervalCV: Coefficient of variation of intervals
+        - PurchaseIntervalCV: Coefficient of variation of intervals (filled with 0 if undefined)
+        - IsPurchaseIntervalCVDefined: Binary flag indicating whether CV is defined
     """
-
     if len(feature_df) == 0:
         return pd.DataFrame(columns=[
             'CustomerID',
             'AvgPurchaseInterval',
-            'StdPurchaseInterval',
-            'PurchaseIntervalCV'
+            'PurchaseIntervalCV',
+            'IsPurchaseIntervalCVDefined'
         ])
 
-    df = feature_df.sort_values(['CustomerID', 'InvoiceDate'])
+    purchase_df = feature_df[feature_df['TransactionType'] == 'Standard_Purchase'].copy()
+    df = purchase_df.sort_values(['CustomerID', 'InvoiceDate']).copy()
 
     df['PrevPurchase'] = df.groupby('CustomerID')['InvoiceDate'].shift(1)
     df['Interval'] = (df['InvoiceDate'] - df['PrevPurchase']).dt.days
@@ -649,50 +551,16 @@ def build_purchase_intervals(feature_df):
         'StdPurchaseInterval'
     ]
 
-    intervals['PurchaseIntervalCV'] = (
-        intervals['StdPurchaseInterval'] /
-        (intervals['AvgPurchaseInterval'] + 1)
+    valid = (intervals['AvgPurchaseInterval'] > 0) & (intervals['StdPurchaseInterval'].notna())
+    intervals['PurchaseIntervalCV'] = np.where(
+        valid,
+        intervals['StdPurchaseInterval'] / intervals['AvgPurchaseInterval'],
+        0
     )
+    intervals['IsPurchaseIntervalCVDefined'] = valid.astype(int)
 
-    intervals = intervals.fillna(0)
-
-    return intervals
-
-def build_customer_age(feature_df, feature_end):
-    """
-    Calculate how long the customer has existed.
-    
-    Features:
-    - CustomerAgeDays: Number of days since customer's first purchase
-    
-    Parameters:
-    -----------
-    feature_df : DataFrame
-        Transaction data from observation window containing at minimum:
-        - CustomerID: Customer identifier
-        - InvoiceDate: Date of transaction (to find first purchase)
-    feature_end : datetime
-        End of observation window (used to calculate age)
-    
-    Returns:
-    --------
-    age_df : DataFrame
-        Customer age features with columns:
-        - CustomerID: Unique customer identifier
-        - CustomerAgeDays: Days since first purchase
-    """
-
-    if len(feature_df) == 0:
-        return pd.DataFrame(columns=['CustomerID', 'CustomerAgeDays'])
-
-    first_purchase = feature_df.groupby('CustomerID')['InvoiceDate'].min()
-
-    age = (feature_end - first_purchase).dt.days
-
-    age_df = age.reset_index()
-    age_df.columns = ['CustomerID', 'CustomerAgeDays']
-
-    return age_df
+    return intervals[['CustomerID','AvgPurchaseInterval','PurchaseIntervalCV',
+            'IsPurchaseIntervalCVDefined']]
 
 def build_product_diversity(feature_df):
     """
@@ -700,7 +568,6 @@ def build_product_diversity(feature_df):
     
     Features:
     - UniqueProducts: Number of distinct products (StockCode) purchased
-    - UniqueInvoices: Number of distinct purchase transactions
     
     Parameters:
     -----------
@@ -716,78 +583,29 @@ def build_product_diversity(feature_df):
         Product diversity features with columns:
         - CustomerID: Unique customer identifier
         - UniqueProducts: Count of distinct products purchased
-        - UniqueInvoices: Count of distinct purchase transactions
     """
 
     if len(feature_df) == 0:
         return pd.DataFrame(columns=[
-            'CustomerID', 'UniqueProducts', 'UniqueInvoices'
+            'CustomerID', 'UniqueProducts'
         ])
 
     diversity = feature_df.groupby('CustomerID').agg({
         'StockCode': 'nunique',
-        'Invoice': 'nunique'
     }).reset_index()
 
     diversity.columns = [
         'CustomerID',
-        'UniqueProducts',
-        'UniqueInvoices'
+        'UniqueProducts'
     ]
 
     return diversity
 
-def build_spend_volatility(feature_df):
-    """
-    Calculate variability of transaction values.
-    
-    Features:
-    - SpendMean: Average transaction amount
-    - SpendStd: Standard deviation of transaction amounts
-    - SpendCV: Coefficient of variation (std/mean) of transaction amounts
-        - Measures spending consistency/volatility
-        - Higher values indicate more variable spending patterns
-    
-    Parameters:
-    -----------
-    feature_df : DataFrame
-        Transaction data from observation window containing at minimum:
-        - CustomerID: Customer identifier
-        - TotalSum: Transaction amount
-    
-    Returns:
-    --------
-    spend : DataFrame
-        Spend volatility features with columns:
-        - CustomerID: Unique customer identifier
-        - SpendMean: Average transaction value
-        - SpendStd: Standard deviation of transaction values
-        - SpendCV: Coefficient of variation of spend
-    """
-
-    if len(feature_df) == 0:
-        return pd.DataFrame(columns=[
-            'CustomerID', 'SpendMean', 'SpendStd', 'SpendCV'
-        ])
-
-    spend = feature_df.groupby('CustomerID')['TotalSum'].agg(['mean', 'std']).reset_index()
-
-    spend.columns = ['CustomerID', 'SpendMean', 'SpendStd']
-
-    spend['SpendCV'] = spend['SpendStd'] / (spend['SpendMean'] + 1)
-
-    spend = spend.fillna(0)
-
-    return spend
-
-def build_purchase_delay_features(rfm_df, interval_df):
+def build_purchase_delay_features(rfm_df, interval_df, epsilon=1e-6):
     """
     Measure whether the customer is purchasing later than expected.
     
     Features:
-    - PurchaseDelay: Difference between recency and average purchase interval
-        - Positive values indicate customer is overdue compared to their typical pattern
-        - Negative values indicate customer is purchasing sooner than usual
     - DelayRatio: Recency divided by average purchase interval
         - Values >1 indicate customer is inactive beyond their typical pattern
         - Values <1 indicate customer is active within their typical pattern
@@ -802,109 +620,66 @@ def build_purchase_delay_features(rfm_df, interval_df):
         Purchase interval features containing at minimum:
         - CustomerID: Customer identifier
         - AvgPurchaseInterval: Mean days between purchases
+    epsilon : float, default=1e-6
+        Small constant to avoid division by zero
     
     Returns:
     --------
     delay_df : DataFrame
         Purchase delay features with columns:
         - CustomerID: Unique customer identifier
-        - PurchaseDelay: Recency minus average interval
         - DelayRatio: Recency divided by average interval
     """
 
     if len(rfm_df) == 0:
         return pd.DataFrame(columns=[
-            "CustomerID",
-            "PurchaseDelay",
-            "DelayRatio"
+            'CustomerID',
+            'DelayRatio'
         ])
 
-    df = rfm_df.merge(interval_df, on="CustomerID", how="left")
+    df = rfm_df.merge(interval_df, on='CustomerID', how='left')
+    
+    df['DelayRatio'] = df['Recency'] / (df['AvgPurchaseInterval'] + epsilon)
 
-    df["PurchaseDelay"] = df["Recency"] - df["AvgPurchaseInterval"]
-
-    df["DelayRatio"] = df["Recency"] / (df["AvgPurchaseInterval"] + 1)
-
-    return df[["CustomerID", "PurchaseDelay", "DelayRatio"]]
-
-def build_activity_decay(rfm_df, freq_trend_df):
+    return df[['CustomerID', 'DelayRatio']]
+    
+def build_engagement_intensity(feature_df, window_size_days):
     """
-    Detect decrease in purchasing activity.
+    Capture how frequently and consistently a customer is active over time.
     
     Features:
-    - ActivityDecay: Ratio of recent purchase frequency to total frequency
-        - Lower values indicate declining activity (recent purchases make up smaller portion)
-        - Higher values indicate sustained or increasing activity
-        - Values close to 1 indicate most purchases are recent
+    - EngagementDensity: Proportion of active days within observation window
+        - High values indicate frequent engagement
+        - Low values indicate sporadic activity
     
     Parameters:
     -----------
-    rfm_df : DataFrame
-        RFM features containing at minimum:
-        - CustomerID: Customer identifier
-        - Frequency: Total number of purchases
-    freq_trend_df : DataFrame
-        Frequency trend features containing at minimum:
-        - CustomerID: Customer identifier
-        - FreqRecent: Number of purchases in recent period
+    feature_df : DataFrame
+        Transaction data from observation window containing at minimum:
+        - CustomerID
+        - InvoiceDate
+    window_size_days : int
+        Length of observation window in days
     
     Returns:
     --------
-    decay_df : DataFrame
-        Activity decay features with columns:
-        - CustomerID: Unique customer identifier
-        - ActivityDecay: Recent frequency divided by total frequency
+    engagement : DataFrame
+        Engagement intensity features with columns:
+        - CustomerID
+        - EngagementDensity
     """
 
-    if len(rfm_df) == 0:
-        return pd.DataFrame(columns=[
-            "CustomerID",
-            "ActivityDecay"
-        ])
+    if len(feature_df) == 0:
+        return pd.DataFrame(columns=['CustomerID', 'ActiveDays', 'EngagementDensity'])
 
-    df = rfm_df.merge(freq_trend_df, on="CustomerID", how="left")
+    df = feature_df.copy()
 
-    df["ActivityDecay"] = df["FreqRecent"] / (df["Frequency"] + 1)
+    df['PurchaseDate'] = df['InvoiceDate'].dt.date
 
-    return df[["CustomerID", "ActivityDecay"]]
+    engagement = df.groupby('CustomerID') \
+        .agg(ActiveDays=('PurchaseDate', 'nunique')) \
+        .reset_index()
 
-def build_revenue_decay(rfm_df, revenue_trend_df):
-    """
-    Detect decrease in spending behaviour.
-    
-    Features:
-    - RevenueDecay: Ratio of recent revenue to total monetary value
-        - Lower values indicate declining spending (recent revenue makes up smaller portion)
-        - Higher values indicate sustained or increasing spending
-        - Values close to 1 indicate most spending is recent
-    
-    Parameters:
-    -----------
-    rfm_df : DataFrame
-        RFM features containing at minimum:
-        - CustomerID: Customer identifier
-        - Monetary: Total spend across all transactions
-    revenue_trend_df : DataFrame
-        Revenue trend features containing at minimum:
-        - CustomerID: Customer identifier
-        - RevRecent: Total revenue in recent period
-    
-    Returns:
-    --------
-    decay_df : DataFrame
-        Revenue decay features with columns:
-        - CustomerID: Unique customer identifier
-        - RevenueDecay: Recent revenue divided by total monetary value
-    """
+    engagement['EngagementDensity'] = engagement['ActiveDays'] / max(window_size_days, 1)
 
-    if len(rfm_df) == 0:
-        return pd.DataFrame(columns=[
-            "CustomerID",
-            "RevenueDecay"
-        ])
-
-    df = rfm_df.merge(revenue_trend_df, on="CustomerID", how="left")
-
-    df["RevenueDecay"] = df["RevRecent"] / (df["Monetary"] + 1)
-
-    return df[["CustomerID", "RevenueDecay"]]
+    return engagement[['CustomerID','EngagementDensity']]

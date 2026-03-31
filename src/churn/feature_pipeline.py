@@ -103,40 +103,48 @@ def extract_features_for_window(df, window_start, window_size_days, churn_thresh
         print(f"No valid customers for window starting {window_start.date()}")
         return None
     
-    first_purchase = get_first_purchase_dates(feature_df)
-    
-    rfm = build_rfm(feature_df, feature_end)
+    # Core behavioral features
+    rfm = build_rfm(feature_df, feature_end, window_size_days)
     aov = build_aov(feature_df)
     return_rate = build_return_rate(feature_df)
-    season = build_seasonality(feature_df)
-    early = build_early_engagement(feature_df)
-    velocity = build_purchase_velocity(feature_df)
-    trend_df = build_trend_features(feature_df, feature_end, window_size_days)
-    lifetime = build_customer_lifetime(first_purchase, feature_end)
-
-    freq_trend = build_frequency_trend(feature_df, feature_end)
-
-    rev_trend = build_revenue_trend(feature_df, feature_end)
-
-    purchase_intervals = build_purchase_intervals(feature_df)
-
-    customer_age = build_customer_age(feature_df, feature_end)
-
-    product_diversity = build_product_diversity(feature_df)
-
-    spend_volatility = build_spend_volatility(feature_df)
-    delay_features = build_purchase_delay_features(rfm, purchase_intervals)
-
-    activity_decay = build_activity_decay(rfm, freq_trend)
-
-    revenue_decay = build_revenue_decay(rfm, rev_trend)
     
-    feature_sets = [rfm, aov, return_rate, season, early, velocity, trend_df, lifetime,freq_trend,rev_trend,purchase_intervals,customer_age,product_diversity,spend_volatility,delay_features,activity_decay,revenue_decay]
+    # Temporal & lifecycle features
+    first_purchase = get_first_purchase_dates(feature_df)
+    lifetime = build_customer_lifetime(feature_df, feature_end)
+    early = build_early_engagement(feature_df)
+    
+    # Behavioral dynamics
+    trend_df = build_trend_features(feature_df, feature_end, window_size_days)
+    
+    # Timing & consistency
+    purchase_intervals = build_purchase_intervals(feature_df)
+    delay_features = build_purchase_delay_features(rfm, purchase_intervals)
+    
+    # Seasonality
+    seasonality = build_seasonality(feature_df)
+    
+    # Product behavior
+    product_diversity = build_product_diversity(feature_df)
+    
+    # Engagement intensity
+    engagement_intensity = build_engagement_intensity(feature_df, window_size_days)
+    
+    feature_sets = [
+        rfm,
+        aov,
+        return_rate,
+        seasonality,
+        early,
+        trend_df,
+        lifetime,
+        purchase_intervals,
+        product_diversity,
+        delay_features,
+        engagement_intensity
+    ]
     features = merge_features(feature_sets, on='CustomerID', how='left')
     
     features = features.fillna(0)
-    
-    features = add_inactivity_ratio(features)
     
     features = build_churn_label(features, label_df)
     
