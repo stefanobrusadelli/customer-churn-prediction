@@ -5,6 +5,55 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+def generate_window_starts(
+    df: pd.DataFrame,
+    obs_window_days: int,
+    pred_window_days: int,
+    step_days: int,
+) -> pd.DatetimeIndex:
+    """
+    Generate start dates for sliding windows based on data availability.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Transaction data containing an InvoiceDate column.
+    obs_window_days : int
+        Length of the observation window in days.
+    pred_window_days : int
+        Length of the prediction window in days.
+    step_days : int
+        Step size between consecutive windows in days.
+
+    Returns
+    -------
+    DatetimeIndex
+        Window start dates covering the full available data range.
+
+    Raises
+    ------
+    ValueError
+        If the dataset does not span enough days to produce at least one window.
+    """
+    min_date = df['InvoiceDate'].min()
+    max_date = df['InvoiceDate'].max()
+
+    first_possible_start = min_date + timedelta(days=obs_window_days)
+    last_possible_start  = max_date - timedelta(days=pred_window_days)
+
+    if first_possible_start > last_possible_start:
+        raise ValueError(
+            f"Insufficient data: need at least "
+            f"{obs_window_days + pred_window_days} days, "
+            f"dataset spans {(max_date - min_date).days} days."
+        )
+
+    return pd.date_range(
+        start=first_possible_start,
+        end=last_possible_start,
+        freq=f'{step_days}D',
+    )
+
 def get_window_data(
     df: pd.DataFrame,
     feature_end,
