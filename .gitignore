@@ -1,12 +1,39 @@
-# Jupyter Notebook checkpoints
+# Jupyter
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
 
 # Python bytecode
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Ignore all compiled files everywhere
-**/__pycache__/
+# Data — raw and processed files are not committed
+# Raw data has a UCI license and is large
+# Processed parquet files are generated outputs
+data/raw/
+data/processed/
+
+# Models — saved artifacts are generated outputs
+models/*.pkl
+models/*.json
+
+# Reports — figures are committed intentionally as a snapshot
+# reports/figures/ is tracked — see README for regeneration instructions
+# Uncomment the line below to exclude figures if preferred
+# reports/figures/
+
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
