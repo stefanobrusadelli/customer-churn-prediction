@@ -10,19 +10,19 @@ __pycache__/
 *.pyd
 
 # Data — raw and processed files are not committed
-# Raw data has a UCI license and is large
-# Processed parquet files are generated outputs
-data/raw/
-data/processed/
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
 
 # Models — saved artifacts are generated outputs
 models/*.pkl
 models/*.json
 
 # Reports — figures are committed intentionally as a snapshot
-# reports/figures/ is tracked — see README for regeneration instructions
-# Uncomment the line below to exclude figures if preferred
-# reports/figures/
+# Uncomment below to exclude figures if preferred
+# reports/figures/*
+# !reports/figures/.gitkeep
 
 # Environment
 .env
