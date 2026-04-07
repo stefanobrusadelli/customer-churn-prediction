@@ -1,301 +1,222 @@
 # Customer Churn Prediction
 
-An end-to-end machine learning project that predicts customer churn using transactional retail data.
+Stefano Brusadelli · [LinkedIn](https://www.linkedin.com/in/stefano-brusadelli-a4919a161)
+
+End-to-end machine learning pipeline for predicting customer churn from transactional purchase data. Built as a portfolio project demonstrating production-oriented ML practices: temporal validation, business-metric optimization, and interpretable modeling.
 
-The model identifies high-risk customers and shows that **the top 30% highest-risk segment captures over 50% of all churners**, enabling highly targeted and cost-effective retention strategies.
+---
 
-The project demonstrates a complete data science workflow, including data cleaning, time-aware feature engineering, walk-forward validation, and interpretable machine learning models.
+## Results
 
-------------------------------------------------------------------------
+| Metric | Value |
+|---|---|
+| ROC-AUC (test) | 0.763 |
+| Precision@10% | 59.7% |
+| Lift@10% | 2.58x |
+| Churners captured in top 30% | 59.3% |
 
-## Key Results
-- Top 10% highest-risk customers show ~56% churn rate vs ~1.6% in lowest-risk segment  
-- Top 20% highest-risk customers capture **39.3% of all churners**  
-- Top 30% highest-risk customers capture **53.9% of all churners**  
+![Model Ranking Performance](reports/figures/gains_and_lift_curve.png)
+*The model consistently outperforms random selection across all 
+targeting thresholds. At the top 10% cutoff (green line) the lift 
+is 2.58x; meaning churners are identified at 2.59 times the rate 
+of random selection.*
 
-------------------------------------------------------------------------
+---
 
-# Project Overview
+## Project Structure
 
-Customer churn prediction is a critical problem for many businesses
-because retaining existing customers is often significantly cheaper than
-acquiring new ones.
+```
+customer-churn-prediction/
+├── notebooks/
+│   ├── 01_data_cleaning.ipynb        # Structural, semantic, and behavioral cleaning
+│   ├── 02_eda.ipynb                  # Exploratory analysis and churn definition
+│   ├── 03_feature_engineering.ipynb  # Sliding window feature construction
+│   └── 04_modeling.ipynb             # Model training, tuning, and evaluation
+├── src/
+│   └── churn/
+│       ├── config.py                 # Window configuration constants
+│       ├── feature_builders.py       # Individual feature group builders
+│       ├── feature_pipeline.py       # Feature extraction orchestration
+│       ├── validation.py             # Data quality checks
+│       └── windowing.py              # Temporal window utilities
+├── data/
+│   ├── raw/                          # Raw Excel data (not committed — see below)
+│   └── processed/                    # Generated parquet files (not committed)
+├── models/                           # Saved model artifacts (not committed)
+├── reports/
+│   └── figures/                      # Generated plots (committed as reference)
+└── README.md
+```
 
-This project builds a predictive modeling pipeline that uses historical
-transaction data to estimate the probability that a customer will churn
-within a future time window.
+---
 
-The project follows a realistic data science workflow:
+## Pipeline Overview
 
-1.  Data cleaning and validation
-2.  Exploratory data analysis to understand customer behavior
-3.  Feature engineering using time-aware sliding windows
-4.  Walk-forward model validation to avoid temporal leakage
-5.  Model interpretation and business impact analysis
+### 1. Data Cleaning (`01_data_cleaning.ipynb`)
 
-------------------------------------------------------------------------
+The raw [UCI Online Retail II](https://archive.ics.uci.edu/dataset/502/online+retail+ii) dataset covers transactions from a UK-based online retailer (December 2009 – December 2011). Three types of cleaning are applied:
 
-# Dataset
+- **Structural** — missing values (22.8% missing Customer IDs dropped), duplicates, invalid records
+- **Semantic** — data type standardization, column renaming
+- **Behavioral** — transaction classification into five categories using stock code patterns, quantity matching, and temporal logic:
+  - `Standard_Purchase`, `Linked_Return`, `Unlinked_Return`, `System_Void`, administrative types
 
-The project uses the **Online Retail dataset**, which contains
-transactional data from a UK-based e-commerce retailer.
+Returns are matched to prior purchases within a 30-day window. Cancellations within 60 minutes are classified as system voids rather than genuine returns.
 
-The dataset includes:
+### 2. Exploratory Data Analysis (`02_eda.ipynb`)
 
--   Customer ID
--   Invoice number
--   Product description
--   Quantity purchased
--   Unit price
--   Transaction timestamp
--   Customer country
+Analysis focuses on UK customers (~85% of revenue). Key findings:
 
-Each row represents a single product purchased in a transaction.
+- **Engagement intensity is the primary churn driver** — Frequency and Monetary show the strongest separation between churned and active customers (Mann-Whitney effect size ~0.75)
+- **Churn is front-loaded** — retention drops from 100% to 20–37% after the first month across all cohorts; 24.1% of customers purchase only once and churn at 77.3%
+- **90-day churn threshold** — grounded in interpurchase time distribution; by 90 days the return probability is in the sparse tail of the distribution
+- **Loyal segment anomaly** — the Loyal RFM segment shows 67.6% apparent churn under the static definition, confirmed as a definition artifact: these are year-round consistent buyers caught between purchase cycles by a snapshot definition
 
-Dataset source: https://archive.ics.uci.edu/ml/datasets/online+retail
+### 3. Feature Engineering (`03_feature_engineering.ipynb`)
 
-------------------------------------------------------------------------
+23 behavioral features are constructed using a **sliding window framework**. Features for each customer are computed only from data available before the prediction point, preventing temporal leakage.
 
-# Problem Definition
+**Window configuration:**
+- Observation window: 180 days
+- Prediction window: 90 days
+- Step size: 30 days
+- 16 windows generated → 21,110 customer-window observations
 
-The goal is to predict **customer churn**, defined as a customer who
-**does not make a purchase during a future prediction window**.
+**Feature groups:**
 
-To simulate a realistic prediction scenario, the dataset is structured
-using **observation windows** and **prediction windows**.
+| Group | Features |
+|---|---|
+| RFM | `Recency`, `Frequency`, `Monetary`, `LogMonetary` |
+| Order value | `AvgOrderValue`, `OrderValueCV` |
+| Timing | `AvgPurchaseInterval`, `PurchaseIntervalCV`, `DelayRatio` |
+| Engagement | `EngagementDensity`, `ValueEngagement` (derived: LogMonetary × EngagementDensity) |
+| Early lifecycle | `FirstMonthPurchases`, `MonetaryFirstMonth`, `AvgOrderValueFirstMonth` |
+| Trend | `RevenueTrend`, `RecentShareLog` |
+| Product | `UniqueProducts`, `ProductDiversityRate`, `ReturnRate` |
+| Lifecycle | `CustomerLifetime` |
+| Seasonality | `Q4Ratio`, `FavoriteMonthSin`, `FavoriteMonthCos` |
 
-Observation Window -- Used to compute behavioral features.\
-Prediction Window -- Used to determine whether the customer churned.
+`ValueEngagement` (the interaction of log-monetary value and engagement density) emerged as the strongest individual predictor, confirmed by SHAP analysis in the modeling stage.
 
-This approach ensures the model only uses **historical information
-available at prediction time**, preventing data leakage.
+**Known issue:** `Q4Ratio` is zero for all customers in windows outside October–December, making it a calendar artifact rather than a behavioral signal. It is flagged for removal in the next iteration.
 
-------------------------------------------------------------------------
+### 4. Modeling (`04_modeling.ipynb`)
 
-# Project Pipeline
+**Validation strategy:** Walk-forward cross-validation with 4 folds. Models are always trained on past windows and evaluated on future ones, replicating production deployment conditions.
 
-Raw Transaction Data\
-↓\
-Data Cleaning and Validation\
-↓\
-Exploratory Data Analysis\
-↓\
-Feature Engineering (Sliding Time Windows)\
-↓\
-Walk-Forward Model Training\
-↓\
-Model Evaluation and Interpretation\
-↓\
-Business Impact Analysis
+**Algorithm selection:** Four tree-based models compared (XGBoost, Gradient Boosting, Random Forest, Voting Ensemble). All perform similarly (AUC 0.74–0.76). XGBoost is selected for its improving trajectory as training data grows and its tunable hyperparameter space.
 
-------------------------------------------------------------------------
+**Optimization metric:** A custom `Lift@10%` scorer is used instead of ROC-AUC. Retention campaigns have finite capacity, so optimizing for ranking quality in the top decile is more operationally relevant than global ranking quality.
 
-# Repository Structure
+**Hyperparameter tuning:** `RandomizedSearchCV` with 80 iterations, optimizing Lift@10% directly using the same walk-forward splits. CV Lift@10% improved from 1.955 (baseline) to 2.124 (tuned), an 8.6% improvement.
 
-    customer-churn-prediction/
+**`scale_pos_weight = 1.5`** — empirically confirmed as optimal via sweep across values 0.8–1.5. Despite the ~33% average churn rate, a mild upweight improves top-decile precision by compensating for window-level distribution shift across the seasonal dataset.
 
-    notebooks/
-    │
-    ├── 01_data_cleaning.ipynb
-    ├── 02_eda.ipynb
-    ├── 03_feature_engineering.ipynb
-    └── 04_modeling.ipynb
+---
 
-    src/
-    Feature engineering pipeline and utility functions
+## Business Impact
 
-    reports/figures
-    Generated figures and analysis outputs
+Customers in the test set are ranked by predicted churn probability and grouped into risk deciles. Churn rate and average spend vary monotonically across deciles, revealing an important finding: **churn risk and customer value are inversely correlated**.
 
-Notebook descriptions:
+| Decile | Churn Rate | Avg Spend | Cum. Churners Captured |
+|---|---|---|---|
+| 1 (highest risk) | 59.7% | £529 | 25.9% |
+| 2 | 45.0% | £659 | 45.4% |
+| 3 | 32.2% | £669 | 59.3% |
+| 4 | 24.3% | £924 | 69.8% |
+| 5–10 | 2.5–21.9% | £975–£7,495 | — |
 
-**01_data_cleaning** - Data audit and schema validation - Handling
-missing values and duplicates - Transaction labeling and return
-matching - Outlier assessment and dataset validation
+![Business Impact](reports/figures/business_impact.png)
+*Churn rate decreases almost monotonically from 59.7% in the highest-risk 
+decile to 2.5% in the lowest. Targeting the top 30% of customers 
+captures 59.3% of all churners.*
 
-**02_eda** - Business metrics and revenue analysis - Customer behavioral
-patterns - RFM analysis - Cohort analysis - Statistical testing of churn
-signals
+The highest-risk customers spend on average £529; less than a tenth of the £7,495 average in the lowest-risk decile. This motivates a **cost-sensitive tiered intervention strategy** rather than uniform high-touch outreach:
 
-**03_feature_engineering** - Sliding window generation - Customer
-behavioral feature extraction - Engagement and lifecycle features -
-Feature stability diagnostics
+| Tier | Deciles | Avg Spend | Suggested action |
+|---|---|---|---|
+| High value, high risk | 1–2, high spend | £600+ | Personal outreach |
+| Low value, high risk | 1–2, low spend | <£600 | Automated offer |
+| Medium risk | 3–4 | £669–£924 | Targeted email |
+| No action | 5–10 | £975–£7,495 | Monitor only |
 
-**04_modeling** - Walk-forward validation framework - Model training and
-hyperparameter tuning - Threshold optimization - SHAP model
-interpretation - Business impact analysis
+---
 
-------------------------------------------------------------------------
+## Key Technical Decisions
 
-# Feature Engineering
+**Why walk-forward validation instead of random CV?**
+Random CV mixes past and future observations, producing artificially optimistic estimates. Walk-forward ensures models are always evaluated on data they could not have seen during training.
 
-Customer-level features are generated using **sliding observation windows** to capture purchasing behavior over time.
+**Why Lift@10% as the optimization metric?**
+ROC-AUC rewards global ranking quality. For a retention campaign with fixed capacity, only the top-ranked customers matter. Optimizing directly for top-decile precision produced an 8.6% improvement over AUC-optimized tuning.
 
-The feature set focuses on describing customer engagement, spending patterns, purchase regularity, lifecycle dynamics, and seasonal purchasing behavior.
+**Why `scale_pos_weight = 1.5` on a near-balanced dataset?**
+With ~33% average churn rate, aggressive class weighting is not needed. The mild upweight compensates for window-level churn rate variation (21%–46% across windows due to seasonality) rather than correcting class imbalance.
 
-### Key Features
+**Why `Precision@10%` over `Lift@10%` for cross-period comparison?**
+`Lift@10%` is a ratio over the baseline churn rate. When the baseline shifts seasonally (32.9% training vs 23.1% test), lift values are not directly comparable. `Precision@10% = 59.7%` is stable regardless of baseline and is the preferred metric for comparing performance across time periods.
 
-| Feature | Description |
-|--------|-------------|
-| Frequency | Number of purchases during the observation window |
-| Monetary | Total spending during the observation window |
-| Recency | Days since the customer's last purchase |
-| Q4Ratio | Proportion of purchases occurring in Q4 (captures seasonal buying behavior) |
-| PurchaseIntervalCV | Variability in time between purchases |
-| SpendCV | Variability in order value |
-| CustomerLifetime | Time since the customer's first purchase |
+---
 
-A **complete feature definition table** is available in the Feature Engineering notebook:
+## SHAP Feature Importance
 
-`notebooks/03_feature_engineering.ipynb`
+`ValueEngagement` dominates the SHAP rankings by a large margin (SHAP range ±3, dwarfing all other features). The top predictors group into four behavioral dimensions:
 
-------------------------------------------------------------------------
+1. **Value engagement** — `ValueEngagement` (dominant)
+2. **Frequency and regularity** — `Frequency`, `AvgPurchaseInterval`, `PurchaseIntervalCV`
+3. **Monetary signals** — `Monetary`, `MonetaryFirstMonth`, `LogMonetary`, `AvgOrderValue`
+4. **Customer history** — `CustomerLifetime`, `ProductDiversityRate`
 
-# Modeling Approach
+`Recency` ranks lower than classical RFM theory would suggest. `ValueEngagement` and `Frequency` already capture much of the same signal, making recency partially redundant once those features are present.
 
-To avoid temporal data leakage, the project uses **walk-forward
-validation**.
+![SHAP Feature Importance](reports/figures/shap_beeswarm.png)
+*`ValueEngagement` dominates by a large margin. Each dot represents 
+one customer; red indicates high feature value, blue indicates low.*
 
-Instead of randomly splitting the dataset, the model is trained on past
-windows and evaluated on future windows.
+---
 
-Models evaluated include:
+## Setup
 
--   Random Forest
--   Gradient Boosting
--   XGBoost
+### Requirements
 
-Model performance is evaluated using:
+```bash
+pip install -r requirements.txt
+```
 
--   ROC-AUC
--   Precision
--   Recall
--   F1 score
+### Data
 
-Additionally, the classification threshold is optimized to balance
-recall and precision for churn detection.
+Raw data is not committed due to file size. Download the [UCI Online Retail II dataset](https://archive.ics.uci.edu/dataset/502/online+retail+ii) and place it at:
 
-------------------------------------------------------------------------
+```
+data/raw/online_retail_II.xlsx
+```
 
-# Model Insights
+### Running the pipeline
 
-## Feature Importance
+Run notebooks in order:
 
-The following plot shows the global importance of each feature based on
-the **average absolute SHAP value**.
+```
+01_data_cleaning.ipynb
+02_eda.ipynb
+03_feature_engineering.ipynb
+04_modeling.ipynb
+```
 
-![Feature Importance](reports/figures/shap_feature_importance.png)
+Each notebook reads from the previous notebook's output in `data/processed/`.
 
-Key drivers of churn prediction include:
+---
 
--   Purchase frequency
--   Seasonal purchase patterns (Q4 ratio)
--   Customer spending behavior
--   Early engagement signals
--   Purchase interval variability
+## Limitations and Next Iteration
 
-------------------------------------------------------------------------
+- **`Q4Ratio` should be removed** — zero for all customers outside Q4 observation windows, making it a calendar artifact with no predictive value at test time
+- **Cross-window lag features not included** — features are computed independently per window; a customer dropping from 10 purchases to 3 looks identical to one who has always purchased 3 times. Delta features capturing change from the previous window are the highest-priority addition
+- **Single test period** — test metrics are based on two windows (approximately two months). A longer evaluation window spanning multiple seasons would give more reliable performance estimates
+- **No production deployment pipeline** — the model is saved as a `.pkl` file but there is no serving infrastructure
 
-## Feature Effects on Churn
+---
 
-The SHAP beeswarm plot shows how different feature values influence the
-churn prediction.
+## Dataset
 
-Each dot represents a customer observation.\
-The horizontal position indicates the impact on the prediction, while
-the color indicates the feature value.
+UCI Online Retail II — [https://archive.ics.uci.edu/dataset/502/online+retail+ii](https://archive.ics.uci.edu/dataset/502/online+retail+ii)
 
-![SHAP Effects](reports/figures/shap_beeswarm.png)
-
-This visualization highlights how customer behavioral patterns influence
-the model's predictions.
-
-------------------------------------------------------------------------
-
-# Business Impact
-
-The model enables **targeted and cost-effective retention strategies** by ranking customers based on churn risk.
-
-Key insights:
-
-- The highest-risk segment shows a churn rate of ~56%, compared to ~1.6% in the lowest-risk group  
-- The top 20% highest-risk customers capture **39.3% of all churners**  
-- The top 30% highest-risk customers capture **53.9% of all churners**  
-
-This demonstrates that churn risk is **highly concentrated in a relatively small portion of customers**.
-
-This allows companies to:
-
-- Focus retention efforts on a high-impact subset of customers  
-- Reduce wasted marketing spend on low-risk users  
-- Prioritize interventions where they are most likely to have an effect 
-
-Example: By targeting only the top 20-30% highest-risk customers, a company can capture a large share of future churners, making retention campaigns significantly more efficient and cost-effective.
-
-------------------------------------------------------------------------
-
-## Churn Risk Segmentation
-
-Customers can be segmented into risk groups based on predicted churn
-probability.
-
-![Churn Risk](reports/figures/churn_by_risk_segment.png)
-
-This segmentation enables companies to prioritize retention efforts
-toward customers with the highest churn risk.
-
-------------------------------------------------------------------------
-## How This Would Be Used in Practice
-
-1. Run the model periodically on active customers  
-2. Rank customers by predicted churn probability  
-3. Segment customers into risk deciles  
-4. Target high-risk segments with retention campaigns  
-   (e.g., discounts, re-engagement emails, loyalty incentives)  
-
-------------------------------------------------------------------------
-
-# Future Work
-
-Several extensions could further improve the modeling framework.
-
-Approaches such as recurrent neural networks or
-transformer architectures may capture temporal dependencies that
-aggregated features cannot fully represent.
-
-Finally, the pipeline could be extended to support **production
-deployment**, including automated feature generation, scheduled model
-retraining, and monitoring of prediction drift over time.
-
-------------------------------------------------------------------------
-
-# Requirements
-
-Main Python libraries used in this project:
-
--   pandas
--   numpy
--   scikit-learn
--   xgboost
--   matplotlib
--   seaborn
--   shap
--   tqdm
-
-Install dependencies using:
-
-    pip install -r requirements.txt
-
-------------------------------------------------------------------------
-
-# Author
-
-Stefano Brusadelli
-
-GitHub: https://github.com/stefanobrusadelli
-
-------------------------------------------------------------------------
-
-# License
-
-This project is provided for educational and portfolio purposes.
+Dua, D. and Graff, C. (2019). UCI Machine Learning Repository. Irvine, CA: University of California, School of Information and Computer Science.
