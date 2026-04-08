@@ -12,13 +12,13 @@ End-to-end machine learning pipeline for predicting customer churn from transact
 |---|---|
 | ROC-AUC (test) | 0.763 |
 | Precision@10% | 59.7% |
-| Lift@10% | 2.58x |
+| Lift@10% | 2.59x |
 | Churners captured in top 30% | 59.3% |
 
 ![Model Ranking Performance](reports/figures/gains_and_lift_curve.png)
 *The model consistently outperforms random selection across all 
 targeting thresholds. At the top 10% cutoff (green line) the lift 
-is 2.58x; meaning churners are identified at 2.59 times the rate 
+is 2.59x; meaning churners are identified at 2.59 times the rate 
 of random selection.*
 
 ---
